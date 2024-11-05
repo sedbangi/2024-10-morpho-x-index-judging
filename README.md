@@ -1,4 +1,4 @@
-# Issue H-1: _calculateMaxBorrowCollateral calculates repay incorrectly and can lead to set token liquidation 
+# Issue M-1: _calculateMaxBorrowCollateral calculates repay incorrectly and can lead to set token liquidation 
 
 Source: https://github.com/sherlock-audit/2024-10-morpho-x-index-judging/issues/26 
 
@@ -38,91 +38,4 @@ _No response_
 ### Mitigation
 
 Don't adjust the max value by `unutilizedLeveragPercentage` when deleveraging
-
-# Issue M-1: MorphoLeverageModule#removeModule is broken and cannot be used without trapping funds 
-
-Source: https://github.com/sherlock-audit/2024-10-morpho-x-index-judging/issues/37 
-
-## Found by 
-0x52
-### Summary
-
-Removing a module for a set token is a core functionality of the protocol but MorphoLeverageModule cannot be removed without breaking set token redemption and trapping user funds. The standard methodology is that MorphoLeverageModule#removeModule would be called after the set has deleveraged to zero debt. However it fails to withdraw the collateral from Morpho, resulting in the funds becoming inaccessible after removal.
-
-This also violates the expected behavior of the module based on comments in the [contract itself](https://github.com/sherlock-audit/2024-10-morpho-x-index/blob/main/index-protocol/contracts/protocol/modules/v1/MorphoLeverageModule.sol#L441-L445) and the [set token](https://github.com/sherlock-audit/2024-10-morpho-x-index/blob/main/index-protocol/contracts/protocol/SetToken.sol#L372-L375)
-
-### Root Cause
-
-MorphoLeverageModule#removeModule fails to withdraw collateral from Morpho
-
-### Internal pre-conditions
-
-None. Funds are trapped regardless of amount.
-
-### External pre-conditions
-
-None.
-
-### Attack Path
-
-[SetToken.sol#L376-L387](https://github.com/sherlock-audit/2024-10-morpho-x-index/blob/main/index-protocol/contracts/protocol/SetToken.sol#L376-L387)
-
-    function removeModule(address _module) external onlyManager {
-        require(!isLocked, "Only when unlocked");
-        require(moduleStates[_module] == ISetToken.ModuleState.INITIALIZED, "Module must be added");
-
-        IModule(_module).removeModule(); <-- @audit call to MorphoLeverageModule
-
-        moduleStates[_module] = ISetToken.ModuleState.NONE;
-
-        modules.removeStorage(_module);
-
-        emit ModuleRemoved(_module);
-    }
-
-The removal process begins with the set token which calls MorphoLeverageModule#removeModule.
-
-[MorphoLeverageModule.sol#L446-L462](https://github.com/sherlock-audit/2024-10-morpho-x-index/blob/main/index-protocol/contracts/protocol/modules/v1/MorphoLeverageModule.sol#L446-L462)
-
-    function removeModule()
-        external
-        override
-        onlyValidAndInitializedSet(ISetToken(msg.sender))
-    {
-        ISetToken setToken = ISetToken(msg.sender);
-
-        sync(setToken);
-
-        delete marketParams[setToken];
-
-        // Try if unregister exists on any of the modules
-        address[] memory modules = setToken.getModules();
-        for(uint256 i = 0; i < modules.length; i++) {
-            try IDebtIssuanceModule(modules[i]).unregisterFromIssuanceModule(setToken) {} catch {} <-- @audit unregisters but never withdraws funds from morpho
-        }
-    }
-
-This unregisters the MorphoLeverageModule from the debtIssuanceModule and clears the marketParams.
-
-[DebtIssuanceModule.sol#L288-L292](https://github.com/sherlock-audit/2024-10-morpho-x-index/blob/main/index-protocol/contracts/protocol/modules/v1/DebtIssuanceModule.sol#L288-L292)
-
-    function unregisterFromIssuanceModule(ISetToken _setToken) external onlyModule(_setToken) onlyValidAndInitializedSet(_setToken) {
-        require(issuanceSettings[_setToken].isModuleHook[msg.sender], "Module not registered.");
-        issuanceSettings[_setToken].moduleIssuanceHooks.removeStorage(msg.sender);
-        issuanceSettings[_setToken].isModuleHook[msg.sender] = false;
-    }
-
-This in turn clears the issuance/redemption hooks, preventing the assets from being accessed.
-
-### Impact
-
-When module is removed, set token redemption breaks and user funds are trapped.
-
-### PoC
-
-_No response_
-
-### Mitigation
-
-MorphoLeverageModule#removeModule should withdraw all funds from Morpho and update the default position for the collateral component.
 
